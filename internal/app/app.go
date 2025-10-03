@@ -1,0 +1,127 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/saimonsiddique/blog-api/internal/config"
+	"github.com/saimonsiddique/blog-api/internal/handler"
+	"github.com/sirupsen/logrus"
+)
+
+const (
+	readTimeout  = 15 * time.Second
+	writeTimeout = 15 * time.Second
+	idleTimeout  = 60 * time.Second
+)
+
+type App struct {
+	config *config.Config
+	router *gin.Engine
+	logger *logrus.Logger
+	server *http.Server
+}
+
+func New(cfg *config.Config) (*App, error) {
+	// Initialize logger
+	logger := initLogger(cfg.App.Environment)
+
+	// Configure Gin mode
+	if cfg.App.Environment == "production" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	app := &App{
+		config: cfg,
+		router: gin.New(),
+		logger: logger,
+	}
+
+	// Setup middleware
+	app.setupMiddleware()
+
+	// Setup routes
+	app.setupRoutes()
+
+	return app, nil
+}
+
+func initLogger(env string) *logrus.Logger {
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: time.RFC3339,
+	})
+
+	if env == "production" {
+		logger.SetLevel(logrus.InfoLevel)
+	} else {
+		logger.SetLevel(logrus.DebugLevel)
+	}
+
+	return logger
+}
+
+func (a *App) setupMiddleware() {
+	// Recovery middleware
+	a.router.Use(gin.Recovery())
+
+	// Logger middleware
+	a.router.Use(gin.Logger())
+}
+
+func (a *App) setupRoutes() {
+	// Health check
+	healthHandler := handler.NewHealthHandler()
+	a.router.GET("/health", healthHandler.HealthCheck)
+
+	// API v1 routes
+	v1 := a.router.Group("/api/v1")
+	{
+		// Future routes will be added here
+		_ = v1
+	}
+}
+
+func (a *App) Run() error {
+	addr := fmt.Sprintf("%s:%s", a.config.Server.Host, a.config.Server.Port)
+
+	a.logger.WithFields(logrus.Fields{
+		"address":     addr,
+		"environment": a.config.App.Environment,
+	}).Info("Starting server")
+
+	// Create HTTP server
+	a.server = &http.Server{
+		Addr:         addr,
+		Handler:      a.router,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+		IdleTimeout:  idleTimeout,
+	}
+
+	return a.server.ListenAndServe()
+}
+
+func (a *App) Shutdown(ctx context.Context) error {
+	a.logger.Info("Shutting down server...")
+
+	if a.server == nil {
+		return nil
+	}
+
+	if err := a.server.Shutdown(ctx); err != nil {
+		a.logger.WithError(err).Error("Server shutdown failed")
+		return err
+	}
+
+	a.logger.Info("Server shutdown successful")
+	return nil
+}
+
+func (a *App) Close() {
+	// Close any resources if needed (database connections, etc.)
+	a.logger.Info("Cleaning up resources...")
+}
