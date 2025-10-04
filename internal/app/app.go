@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/saimonsiddique/blog-api/internal/config"
+	"github.com/saimonsiddique/blog-api/internal/database"
 	"github.com/saimonsiddique/blog-api/internal/handler"
 	"github.com/sirupsen/logrus"
 )
@@ -23,11 +25,18 @@ type App struct {
 	router *gin.Engine
 	logger *logrus.Logger
 	server *http.Server
+	db     *pgxpool.Pool
 }
 
 func New(cfg *config.Config) (*App, error) {
 	// Initialize logger
 	logger := initLogger(cfg.App.Environment)
+
+	// Initialize database
+	db, err := database.NewPostgresPool(&cfg.Database)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize database: %w", err)
+	}
 
 	// Configure Gin mode
 	if cfg.App.Environment == "production" {
@@ -38,6 +47,7 @@ func New(cfg *config.Config) (*App, error) {
 		config: cfg,
 		router: gin.New(),
 		logger: logger,
+		db:     db,
 	}
 
 	// Setup middleware
@@ -74,7 +84,7 @@ func (a *App) setupMiddleware() {
 
 func (a *App) setupRoutes() {
 	// Health check
-	healthHandler := handler.NewHealthHandler()
+	healthHandler := handler.NewHealthHandler(a.db)
 	a.router.GET("/health", healthHandler.HealthCheck)
 
 	// API v1 routes
@@ -122,6 +132,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 }
 
 func (a *App) Close() {
-	// Close any resources if needed (database connections, etc.)
 	a.logger.Info("Cleaning up resources...")
+
+	if a.db != nil {
+		a.db.Close()
+		a.logger.Info("Database connection closed")
+	}
 }
