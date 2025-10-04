@@ -21,4 +21,5 @@ type APIError struct {
 type HealthResponse struct {
 	Status    string `json:"status"`
 	Timestamp string `json:"timestamp"`
+	Database  string `json:"database"`
 }
