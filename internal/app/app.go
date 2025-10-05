@@ -11,6 +11,8 @@ import (
 	"github.com/saimonsiddique/blog-api/internal/config"
 	"github.com/saimonsiddique/blog-api/internal/database"
 	"github.com/saimonsiddique/blog-api/internal/handler"
+	"github.com/saimonsiddique/blog-api/internal/repository"
+	"github.com/saimonsiddique/blog-api/internal/service"
 	"github.com/sirupsen/logrus"
 )
 
@@ -83,15 +85,40 @@ func (a *App) setupMiddleware() {
 }
 
 func (a *App) setupRoutes() {
-	// Health check
+	// Initialize repositories
+	userRepo := repository.NewUserRepository(a.db)
+	authRepo := repository.NewAuthRepository(a.db)
+
+	// Initialize services
+	authService := service.NewAuthService(userRepo, authRepo, &a.config.JWT)
+	userService := service.NewUserService(userRepo)
+
+	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(a.db)
+	authHandler := handler.NewAuthHandler(authService)
+	userHandler := handler.NewUserHandler(userService)
+
+	// Health check
 	a.router.GET("/health", healthHandler.HealthCheck)
 
 	// API v1 routes
 	v1 := a.router.Group("/api/v1")
 	{
-		// Future routes will be added here
-		_ = v1
+		// Public auth routes
+		auth := v1.Group("/auth")
+		{
+			auth.POST("/register", authHandler.Register)
+			auth.POST("/login", authHandler.Login)
+			auth.POST("/refresh", authHandler.RefreshToken)
+		}
+
+		// Protected user routes
+		protected := v1.Group("")
+		protected.Use(handler.AuthMiddleware(&a.config.JWT))
+		{
+			protected.GET("/me", userHandler.GetProfile)
+			protected.PUT("/me", userHandler.UpdateProfile)
+		}
 	}
 }
 

@@ -71,10 +71,18 @@ func ServiceError(c *gin.Context, err error) {
 		Error(c, http.StatusConflict, ErrCodeEmailTaken,
 			"Email already taken", err.Error(),
 			"Use a different email address")
+	case errors.Is(err, domain.ErrUsernameTaken):
+		Error(c, http.StatusConflict, ErrCodeUsernameTaken,
+			"Username already taken", err.Error(),
+			"Use a different username")
 	case errors.Is(err, domain.ErrPostNotFound):
 		Error(c, http.StatusNotFound, ErrCodePostNotFound,
 			"Post not found", err.Error(),
 			"Verify the post ID")
+	case errors.Is(err, domain.ErrSlugTaken):
+		Error(c, http.StatusConflict, ErrCodeSlugTaken,
+			"Slug already taken", err.Error(),
+			"Use a different title or slug")
 	case errors.Is(err, domain.ErrForbidden):
 		Error(c, http.StatusForbidden, ErrCodeForbidden,
 			"Forbidden", err.Error(),
@@ -83,6 +91,10 @@ func ServiceError(c *gin.Context, err error) {
 		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized,
 			"Unauthorized", err.Error(),
 			"Please login again")
+	case errors.Is(err, domain.ErrConflict):
+		Error(c, http.StatusConflict, ErrCodeConflict,
+			"Conflict", err.Error(),
+			"Resolve the conflict and try again")
 	default:
 		Error(c, http.StatusInternalServerError, ErrCodeInternalServer,
 			"Internal server error", "An unexpected error occurred",
