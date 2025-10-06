@@ -13,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig
 	App      AppConfig
 	JWT      JWTConfig
+	RabbitMQ RabbitMQConfig
 }
 
 type ServerConfig struct {
@@ -41,6 +42,14 @@ type JWTConfig struct {
 	RefreshTTL time.Duration
 }
 
+type RabbitMQConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+	Vhost    string
+}
+
 func Load() (*Config, error) {
 	// Load .env file if exists (ignore error in production)
 	_ = godotenv.Load()
@@ -67,6 +76,13 @@ func Load() (*Config, error) {
 			Issuer:     getEnv("JWT_ISSUER", "blog-api"),
 			AccessTTL:  getDuration("JWT_ACCESS_TTL", 15*time.Minute),
 			RefreshTTL: getDuration("JWT_REFRESH_TTL", 168*time.Hour),
+		},
+		RabbitMQ: RabbitMQConfig{
+			Host:     getEnv("RABBITMQ_HOST", "localhost"),
+			Port:     getEnv("RABBITMQ_PORT", "5672"),
+			User:     getEnv("RABBITMQ_USER", "guest"),
+			Password: getEnv("RABBITMQ_PASSWORD", "guest"),
+			Vhost:    getEnv("RABBITMQ_VHOST", "/"),
 		},
 	}
 

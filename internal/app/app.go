@@ -11,8 +11,10 @@ import (
 	"github.com/saimonsiddique/blog-api/internal/config"
 	"github.com/saimonsiddique/blog-api/internal/database"
 	"github.com/saimonsiddique/blog-api/internal/handler"
+	"github.com/saimonsiddique/blog-api/internal/queue"
 	"github.com/saimonsiddique/blog-api/internal/repository"
 	"github.com/saimonsiddique/blog-api/internal/service"
+	"github.com/saimonsiddique/blog-api/internal/worker"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,11 +25,15 @@ const (
 )
 
 type App struct {
-	config *config.Config
-	router *gin.Engine
-	logger *logrus.Logger
-	server *http.Server
-	db     *pgxpool.Pool
+	config       *config.Config
+	router       *gin.Engine
+	logger       *logrus.Logger
+	server       *http.Server
+	db           *pgxpool.Pool
+	queue        *queue.RabbitMQ
+	worker       *worker.PostPublishWorker
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -40,16 +46,40 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
+	// Initialize RabbitMQ
+	queueCfg := &queue.Config{
+		Host:     cfg.RabbitMQ.Host,
+		Port:     cfg.RabbitMQ.Port,
+		User:     cfg.RabbitMQ.User,
+		Password: cfg.RabbitMQ.Password,
+		Vhost:    cfg.RabbitMQ.Vhost,
+	}
+	rabbitMQ, err := queue.NewRabbitMQ(queueCfg, logger)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize RabbitMQ: %w", err)
+	}
+
+	// Initialize worker
+	postPublishWorker := worker.NewPostPublishWorker(rabbitMQ, db, logger)
+
 	// Configure Gin mode
 	if cfg.App.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	// Create worker context
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+
 	app := &App{
-		config: cfg,
-		router: gin.New(),
-		logger: logger,
-		db:     db,
+		config:       cfg,
+		router:       gin.New(),
+		logger:       logger,
+		db:           db,
+		queue:        rabbitMQ,
+		worker:       postPublishWorker,
+		workerCtx:    workerCtx,
+		workerCancel: workerCancel,
 	}
 
 	// Setup middleware
@@ -57,6 +87,12 @@ func New(cfg *config.Config) (*App, error) {
 
 	// Setup routes
 	app.setupRoutes()
+
+	// Start worker
+	if err := app.worker.Start(app.workerCtx); err != nil {
+		app.cleanup()
+		return nil, fmt.Errorf("failed to start worker: %w", err)
+	}
 
 	return app, nil
 }
@@ -90,10 +126,13 @@ func (a *App) setupRoutes() {
 	authRepo := repository.NewAuthRepository(a.db)
 	postRepo := repository.NewPostRepository(a.db)
 
+	// Initialize queue publisher
+	postPublisher := queue.NewPostPublisher(a.queue)
+
 	// Initialize services
 	authService := service.NewAuthService(userRepo, authRepo, &a.config.JWT)
 	userService := service.NewUserService(userRepo)
-	postService := service.NewPostService(postRepo, userRepo)
+	postService := service.NewPostService(postRepo, userRepo, postPublisher)
 
 	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(a.db)
@@ -172,8 +211,25 @@ func (a *App) Shutdown(ctx context.Context) error {
 }
 
 func (a *App) Close() {
+	a.cleanup()
+}
+
+func (a *App) cleanup() {
 	a.logger.Info("Cleaning up resources...")
 
+	// Stop worker
+	if a.workerCancel != nil {
+		a.workerCancel()
+		a.logger.Info("Worker stopped")
+	}
+
+	// Close RabbitMQ
+	if a.queue != nil {
+		a.queue.Close()
+		a.logger.Info("RabbitMQ connection closed")
+	}
+
+	// Close database
 	if a.db != nil {
 		a.db.Close()
 		a.logger.Info("Database connection closed")

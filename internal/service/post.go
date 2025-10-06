@@ -7,18 +7,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/saimonsiddique/blog-api/internal/domain"
 	"github.com/saimonsiddique/blog-api/internal/pkg/slug"
+	"github.com/saimonsiddique/blog-api/internal/queue"
 	"github.com/saimonsiddique/blog-api/internal/repository"
 )
 
 type PostService struct {
-	postRepo *repository.PostRepository
-	userRepo *repository.UserRepository
+	postRepo      *repository.PostRepository
+	userRepo      *repository.UserRepository
+	postPublisher *queue.PostPublisher
 }
 
-func NewPostService(postRepo *repository.PostRepository, userRepo *repository.UserRepository) *PostService {
+func NewPostService(postRepo *repository.PostRepository, userRepo *repository.UserRepository, postPublisher *queue.PostPublisher) *PostService {
 	return &PostService{
-		postRepo: postRepo,
-		userRepo: userRepo,
+		postRepo:      postRepo,
+		userRepo:      userRepo,
+		postPublisher: postPublisher,
 	}
 }
 
@@ -195,20 +198,61 @@ func (s *PostService) Update(ctx context.Context, userUUID uuid.UUID, postUUID u
 	}
 
 	if req.Status != nil {
-		updates["status"] = *req.Status
+		// Get current post to check status transitions
+		currentPost, err := s.postRepo.GetByUUID(ctx, postUUID)
+		if err != nil {
+			return nil, err
+		}
 
-		// Set published_at when changing to published
+		// Handle publish status change via queue
 		if *req.Status == domain.PostStatusPublished {
-			// Get current post to check if it's already published
-			currentPost, err := s.postRepo.GetByUUID(ctx, postUUID)
+			// Check if already published
+			if currentPost.Status == domain.PostStatusPublished {
+				return nil, domain.ErrPostAlreadyPublished
+			}
+
+			// Enqueue publish event
+			event := &domain.PostPublishEvent{
+				PostUUID:     postUUID.String(),
+				AuthorUUID:   userUUID.String(),
+				RequestedAt:  time.Now(),
+				ScheduledFor: req.ScheduledFor,
+			}
+
+			if err := s.postPublisher.PublishPostPublishEvent(ctx, event); err != nil {
+				return nil, err
+			}
+
+			// Don't update status directly - worker will handle it
+			// Return current post state
+			post, err := s.postRepo.GetByUUID(ctx, postUUID)
 			if err != nil {
 				return nil, err
 			}
 
-			// Only set published_at if not already published
-			if currentPost.PublishedAt == nil {
-				now := time.Now()
-				updates["published_at"] = now
+			return &domain.PostResponse{
+				UUID:        post.UUID,
+				Title:       post.Title,
+				Slug:        post.Slug,
+				Content:     post.Content,
+				Excerpt:     post.Excerpt,
+				Status:      post.Status,
+				PublishedAt: post.PublishedAt,
+				CreatedAt:   post.CreatedAt,
+				UpdatedAt:   post.UpdatedAt,
+				Author:      post.Author,
+			}, nil
+		} else {
+			// Validate status transitions
+			if err := s.validateStatusChange(currentPost.Status, *req.Status); err != nil {
+				return nil, err
+			}
+
+			updates["status"] = *req.Status
+
+			// Clear published_at when changing to draft or archived
+			if *req.Status == domain.PostStatusDraft || *req.Status == domain.PostStatusArchived {
+				updates["published_at"] = nil
 			}
 		}
 	}
@@ -237,6 +281,34 @@ func (s *PostService) Update(ctx context.Context, userUUID uuid.UUID, postUUID u
 		UpdatedAt:   updatedPost.UpdatedAt,
 		Author:      post.Author,
 	}, nil
+}
+
+// validateStatusChange validates if a status transition is allowed
+func (s *PostService) validateStatusChange(currentStatus, newStatus domain.PostStatus) error {
+	// Allow transitions to the same status (no-op)
+	if currentStatus == newStatus {
+		return nil
+	}
+
+	// Define allowed transitions
+	allowedTransitions := map[domain.PostStatus][]domain.PostStatus{
+		domain.PostStatusDraft:     {domain.PostStatusPublished, domain.PostStatusArchived},
+		domain.PostStatusPublished: {domain.PostStatusDraft, domain.PostStatusArchived},
+		domain.PostStatusArchived:  {domain.PostStatusDraft},
+	}
+
+	allowed, exists := allowedTransitions[currentStatus]
+	if !exists {
+		return domain.ErrInvalidStatusChange
+	}
+
+	for _, allowedStatus := range allowed {
+		if allowedStatus == newStatus {
+			return nil
+		}
+	}
+
+	return domain.ErrInvalidStatusChange
 }
 
 // Delete deletes a post
