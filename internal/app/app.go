@@ -88,15 +88,18 @@ func (a *App) setupRoutes() {
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(a.db)
 	authRepo := repository.NewAuthRepository(a.db)
+	postRepo := repository.NewPostRepository(a.db)
 
 	// Initialize services
 	authService := service.NewAuthService(userRepo, authRepo, &a.config.JWT)
 	userService := service.NewUserService(userRepo)
+	postService := service.NewPostService(postRepo, userRepo)
 
 	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(a.db)
 	authHandler := handler.NewAuthHandler(authService)
 	userHandler := handler.NewUserHandler(userService)
+	postHandler := handler.NewPostHandler(postService)
 
 	// Health check
 	a.router.GET("/health", healthHandler.HealthCheck)
@@ -112,12 +115,22 @@ func (a *App) setupRoutes() {
 			auth.POST("/refresh", authHandler.RefreshToken)
 		}
 
-		// Protected user routes
+		// Public post routes
+		v1.GET("/posts", postHandler.ListPosts)
+		v1.GET("/posts/:id", postHandler.GetPost)
+
+		// Protected routes
 		protected := v1.Group("")
 		protected.Use(handler.AuthMiddleware(&a.config.JWT))
 		{
+			// User routes
 			protected.GET("/me", userHandler.GetProfile)
 			protected.PUT("/me", userHandler.UpdateProfile)
+
+			// Post routes
+			protected.POST("/posts", postHandler.CreatePost)
+			protected.PUT("/posts/:id", postHandler.UpdatePost)
+			protected.DELETE("/posts/:id", postHandler.DeletePost)
 		}
 	}
 }
