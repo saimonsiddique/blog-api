@@ -83,6 +83,14 @@ func ServiceError(c *gin.Context, err error) {
 		Error(c, http.StatusConflict, ErrCodeSlugTaken,
 			"Slug already taken", err.Error(),
 			"Use a different title or slug")
+	case errors.Is(err, domain.ErrPostAlreadyPublished):
+		Error(c, http.StatusConflict, ErrCodePostAlreadyPublished,
+			"Post already published", err.Error(),
+			"Post is already published. Unpublish it first if you want to change its status")
+	case errors.Is(err, domain.ErrInvalidStatusChange):
+		Error(c, http.StatusBadRequest, ErrCodeInvalidStatusChange,
+			"Invalid status change", err.Error(),
+			"Check the current post status and allowed transitions")
 	case errors.Is(err, domain.ErrForbidden):
 		Error(c, http.StatusForbidden, ErrCodeForbidden,
 			"Forbidden", err.Error(),

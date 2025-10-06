@@ -52,10 +52,11 @@ type CreatePostRequest struct {
 
 // UpdatePostRequest represents the request to update a post
 type UpdatePostRequest struct {
-	Title   *string     `json:"title" validate:"omitempty,min=3,max=255"`
-	Content *string     `json:"content" validate:"omitempty,min=10"`
-	Excerpt *string     `json:"excerpt" validate:"omitempty,max=500"`
-	Status  *PostStatus `json:"status" validate:"omitempty,oneof=draft published archived"`
+	Title        *string     `json:"title" validate:"omitempty,min=3,max=255"`
+	Content      *string     `json:"content" validate:"omitempty,min=10"`
+	Excerpt      *string     `json:"excerpt" validate:"omitempty,max=500"`
+	Status       *PostStatus `json:"status" validate:"omitempty,oneof=draft published archived"`
+	ScheduledFor *time.Time  `json:"scheduledFor" validate:"omitempty"`
 }
 
 // ListPostsRequest represents query parameters for listing posts
