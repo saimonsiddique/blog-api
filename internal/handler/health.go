@@ -37,5 +37,5 @@ func (h *HealthHandler) HealthCheck(c *gin.Context) {
 		Database:  dbStatus,
 	}
 
-	Success(c, http.StatusOK, response)
+	Success(c, response)
 }

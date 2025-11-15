@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/saimonsiddique/blog-api/internal/config"
+	"github.com/saimonsiddique/blog-api/internal/pkg/logger"
 )
 
 const (
@@ -24,13 +25,14 @@ func NewPostgresPool(cfg *config.DatabaseConfig) (*pgxpool.Pool, error) {
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Name, cfg.SSLMode,
 	)
 
-	// Print a masked DSN for debugging
-	// masked := fmt.Sprintf("postgres://%s:***@%s:%s/%s?sslmode=%s",
-	// 	cfg.User, cfg.Host, cfg.Port, cfg.Name, cfg.SSLMode,
-	// )
-
-	// print the masked DSN
-	fmt.Println("Connecting to database with DSN:", dsn)
+	// Log connection attempt with masked credentials
+	logger.WithFields(map[string]interface{}{
+		"host":     cfg.Host,
+		"port":     cfg.Port,
+		"database": cfg.Name,
+		"user":     cfg.User,
+		"sslmode":  cfg.SSLMode,
+	}).Info("Connecting to PostgreSQL database")
 
 	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -44,6 +46,14 @@ func NewPostgresPool(cfg *config.DatabaseConfig) (*pgxpool.Pool, error) {
 	poolConfig.MaxConnIdleTime = maxConnIdleTime
 	poolConfig.HealthCheckPeriod = healthCheckPeriod
 
+	logger.WithFields(map[string]interface{}{
+		"max_connections":     maxConnections,
+		"min_connections":     minConnections,
+		"max_conn_lifetime":   maxConnLifetime,
+		"max_conn_idle_time":  maxConnIdleTime,
+		"health_check_period": healthCheckPeriod,
+	}).Debug("Database connection pool configuration")
+
 	// Create connection pool with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), connectionTimeout)
 	defer cancel()
@@ -55,8 +65,9 @@ func NewPostgresPool(cfg *config.DatabaseConfig) (*pgxpool.Pool, error) {
 
 	// Try to verify connection (non-fatal)
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Warning: Could not ping database: %v\n", err)
-		fmt.Println("Server will start but database connection may not be working")
+		logger.WithError(err).Warn("Could not ping database - connection may not be working")
+	} else {
+		logger.Info("Database connection established successfully")
 	}
 
 	return pool, nil

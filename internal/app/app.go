@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,7 @@ import (
 	"github.com/saimonsiddique/blog-api/internal/config"
 	"github.com/saimonsiddique/blog-api/internal/database"
 	"github.com/saimonsiddique/blog-api/internal/handler"
+	"github.com/saimonsiddique/blog-api/internal/pkg/logger"
 	"github.com/saimonsiddique/blog-api/internal/queue"
 	"github.com/saimonsiddique/blog-api/internal/repository"
 	"github.com/saimonsiddique/blog-api/internal/service"
@@ -24,10 +26,15 @@ const (
 	idleTimeout  = 60 * time.Second
 )
 
+var (
+	instance *App
+	once     sync.Once
+)
+
+// App represents the singleton application instance
 type App struct {
 	config       *config.Config
 	router       *gin.Engine
-	logger       *logrus.Logger
 	server       *http.Server
 	db           *pgxpool.Pool
 	queue        *queue.RabbitMQ
@@ -36,80 +43,89 @@ type App struct {
 	workerCancel context.CancelFunc
 }
 
-func New(cfg *config.Config) (*App, error) {
-	// Initialize logger
-	logger := initLogger(cfg.App.Environment)
-
-	// Initialize database
-	db, err := database.NewPostgresPool(&cfg.Database)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
-	}
-
-	// Initialize RabbitMQ
-	queueCfg := &queue.Config{
-		Host:     cfg.RabbitMQ.Host,
-		Port:     cfg.RabbitMQ.Port,
-		User:     cfg.RabbitMQ.User,
-		Password: cfg.RabbitMQ.Password,
-		Vhost:    cfg.RabbitMQ.Vhost,
-	}
-	rabbitMQ, err := queue.NewRabbitMQ(queueCfg, logger)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to initialize RabbitMQ: %w", err)
-	}
-
-	// Initialize worker
-	postPublishWorker := worker.NewPostPublishWorker(rabbitMQ, db, logger)
-
-	// Configure Gin mode
-	if cfg.App.Environment == "production" {
-		gin.SetMode(gin.ReleaseMode)
-	}
-
-	// Create worker context
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-
-	app := &App{
-		config:       cfg,
-		router:       gin.New(),
-		logger:       logger,
-		db:           db,
-		queue:        rabbitMQ,
-		worker:       postPublishWorker,
-		workerCtx:    workerCtx,
-		workerCancel: workerCancel,
-	}
-
-	// Setup middleware
-	app.setupMiddleware()
-
-	// Setup routes
-	app.setupRoutes()
-
-	// Start worker
-	if err := app.worker.Start(app.workerCtx); err != nil {
-		app.cleanup()
-		return nil, fmt.Errorf("failed to start worker: %w", err)
-	}
-
-	return app, nil
+// Get returns the singleton App instance (for testing/access)
+func Get() *App {
+	return instance
 }
 
-func initLogger(env string) *logrus.Logger {
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.JSONFormatter{
-		TimestampFormat: time.RFC3339,
+// New creates and initializes the singleton App instance
+func New(cfg *config.Config) (*App, error) {
+	var initError error
+
+	once.Do(func() {
+		// Initialize centralized logger
+		logLevel := logrus.InfoLevel
+		if cfg.App.Environment != "production" {
+			logLevel = logrus.DebugLevel
+		}
+		logger.Init(logLevel, nil)
+
+		logger.Info("Initializing application...")
+
+		// Initialize database
+		db, err := database.NewPostgresPool(&cfg.Database)
+		if err != nil {
+			initError = fmt.Errorf("failed to initialize database: %w", err)
+			return
+		}
+
+		// Initialize RabbitMQ
+		queueCfg := &queue.Config{
+			Host:     cfg.RabbitMQ.Host,
+			Port:     cfg.RabbitMQ.Port,
+			User:     cfg.RabbitMQ.User,
+			Password: cfg.RabbitMQ.Password,
+			Vhost:    cfg.RabbitMQ.Vhost,
+		}
+		rabbitMQ, err := queue.NewRabbitMQ(queueCfg, logger.Get())
+		if err != nil {
+			db.Close()
+			initError = fmt.Errorf("failed to initialize RabbitMQ: %w", err)
+			return
+		}
+
+		// Initialize worker
+		postPublishWorker := worker.NewPostPublishWorker(rabbitMQ, db, logger.Get())
+
+		// Configure Gin mode
+		if cfg.App.Environment == "production" {
+			gin.SetMode(gin.ReleaseMode)
+		}
+
+		// Create worker context
+		workerCtx, workerCancel := context.WithCancel(context.Background())
+
+		instance = &App{
+			config:       cfg,
+			router:       gin.New(),
+			db:           db,
+			queue:        rabbitMQ,
+			worker:       postPublishWorker,
+			workerCtx:    workerCtx,
+			workerCancel: workerCancel,
+		}
+
+		// Setup middleware
+		instance.setupMiddleware()
+
+		// Setup routes
+		instance.setupRoutes()
+
+		// Start worker
+		if err := instance.worker.Start(instance.workerCtx); err != nil {
+			instance.cleanup()
+			initError = fmt.Errorf("failed to start worker: %w", err)
+			return
+		}
+
+		logger.Info("Application initialized successfully")
 	})
 
-	if env == "production" {
-		logger.SetLevel(logrus.InfoLevel)
-	} else {
-		logger.SetLevel(logrus.DebugLevel)
+	if initError != nil {
+		return nil, initError
 	}
 
-	return logger
+	return instance, nil
 }
 
 func (a *App) setupMiddleware() {
@@ -177,7 +193,7 @@ func (a *App) setupRoutes() {
 func (a *App) Run() error {
 	addr := fmt.Sprintf("%s:%s", a.config.Server.Host, a.config.Server.Port)
 
-	a.logger.WithFields(logrus.Fields{
+	logger.WithFields(logrus.Fields{
 		"address":     addr,
 		"environment": a.config.App.Environment,
 	}).Info("Starting server")
@@ -195,18 +211,18 @@ func (a *App) Run() error {
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
-	a.logger.Info("Shutting down server...")
+	logger.Info("Shutting down server...")
 
 	if a.server == nil {
 		return nil
 	}
 
 	if err := a.server.Shutdown(ctx); err != nil {
-		a.logger.WithError(err).Error("Server shutdown failed")
+		logger.WithError(err).Error("Server shutdown failed")
 		return err
 	}
 
-	a.logger.Info("Server shutdown successful")
+	logger.Info("Server shutdown successful")
 	return nil
 }
 
@@ -215,23 +231,23 @@ func (a *App) Close() {
 }
 
 func (a *App) cleanup() {
-	a.logger.Info("Cleaning up resources...")
+	logger.Info("Cleaning up resources...")
 
 	// Stop worker
 	if a.workerCancel != nil {
 		a.workerCancel()
-		a.logger.Info("Worker stopped")
+		logger.Info("Worker stopped")
 	}
 
 	// Close RabbitMQ
 	if a.queue != nil {
 		a.queue.Close()
-		a.logger.Info("RabbitMQ connection closed")
+		logger.Info("RabbitMQ connection closed")
 	}
 
 	// Close database
 	if a.db != nil {
 		a.db.Close()
-		a.logger.Info("Database connection closed")
+		logger.Info("Database connection closed")
 	}
 }
