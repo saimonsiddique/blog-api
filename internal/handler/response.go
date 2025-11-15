@@ -2,131 +2,105 @@ package handler
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/saimonsiddique/blog-api/internal/domain"
+	"github.com/saimonsiddique/blog-api/internal/pkg/logger"
 )
 
-const docsURL = "https://api-docs.example.com"
-
-func getTrackingID(c *gin.Context) string {
-	trackingID := c.GetHeader("X-Request-ID")
-	if trackingID == "" {
-		trackingID = uuid.New().String()
+// getOrCreateRequestID gets or creates a unique request ID for tracking
+func getOrCreateRequestID(c *gin.Context) string {
+	requestID := c.GetHeader("X-Request-ID")
+	if requestID == "" {
+		requestID = uuid.New().String()
 	}
-	c.Header("X-Request-ID", trackingID)
-	return trackingID
+	c.Header("X-Request-ID", requestID)
+	return requestID
 }
 
-func Success(c *gin.Context, statusCode int, data interface{}) {
-	trackingID := getTrackingID(c)
+// Success sends a successful API response with consistent structure
+func Success(c *gin.Context, data interface{}) {
+	requestID := getOrCreateRequestID(c)
 
 	response := domain.APIResponse{
-		Status:           "success",
-		StatusCode:       statusCode,
-		TrackingID:       trackingID,
-		Data:             data,
-		DocumentationURL: docsURL,
+		Success:   true,
+		RequestID: requestID,
+		Data:      data,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// SuccessWithStatus sends a successful API response with custom status code
+func SuccessWithStatus(c *gin.Context, statusCode int, data interface{}) {
+	requestID := getOrCreateRequestID(c)
+
+	response := domain.APIResponse{
+		Success:   true,
+		RequestID: requestID,
+		Data:      data,
 	}
 
 	c.JSON(statusCode, response)
 }
 
-func Error(c *gin.Context, statusCode int, code, message, details, suggestion string) {
-	trackingID := getTrackingID(c)
+// Error sends an error response with consistent structure
+func Error(c *gin.Context, statusCode int, code, message string) {
+	requestID := getOrCreateRequestID(c)
 
 	response := domain.APIResponse{
-		Status:           "error",
-		StatusCode:       statusCode,
-		TrackingID:       trackingID,
-		DocumentationURL: docsURL,
+		Success:   false,
+		RequestID: requestID,
 		Error: &domain.APIError{
-			Code:       code,
-			Message:    message,
-			Details:    details,
-			Timestamp:  time.Now().Format(time.RFC3339),
-			Path:       c.Request.URL.Path,
-			Suggestion: suggestion,
+			Code:    code,
+			Message: message,
 		},
 	}
 
+	logger.WithFields(map[string]interface{}{
+		"request_id": requestID,
+		"path":       c.Request.URL.Path,
+		"method":     c.Request.Method,
+		"error_code": code,
+		"status":     statusCode,
+	}).Error(message)
+
 	c.JSON(statusCode, response)
 }
 
+// ServiceError maps service errors to appropriate HTTP responses
 func ServiceError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidCredentials):
-		Error(c, http.StatusUnauthorized, ErrCodeInvalidCredentials,
-			"Invalid credentials", err.Error(),
-			"Check your email and password")
+		Error(c, http.StatusUnauthorized, ErrCodeInvalidCredentials, "Invalid credentials")
 	case errors.Is(err, domain.ErrUserNotFound):
-		Error(c, http.StatusNotFound, ErrCodeUserNotFound,
-			"User not found", err.Error(),
-			"Verify the user ID or email")
+		Error(c, http.StatusNotFound, ErrCodeUserNotFound, "User not found")
 	case errors.Is(err, domain.ErrEmailTaken):
-		Error(c, http.StatusConflict, ErrCodeEmailTaken,
-			"Email already taken", err.Error(),
-			"Use a different email address")
+		Error(c, http.StatusConflict, ErrCodeEmailTaken, "Email already taken")
 	case errors.Is(err, domain.ErrUsernameTaken):
-		Error(c, http.StatusConflict, ErrCodeUsernameTaken,
-			"Username already taken", err.Error(),
-			"Use a different username")
+		Error(c, http.StatusConflict, ErrCodeUsernameTaken, "Username already taken")
 	case errors.Is(err, domain.ErrPostNotFound):
-		Error(c, http.StatusNotFound, ErrCodePostNotFound,
-			"Post not found", err.Error(),
-			"Verify the post ID")
+		Error(c, http.StatusNotFound, ErrCodePostNotFound, "Post not found")
 	case errors.Is(err, domain.ErrSlugTaken):
-		Error(c, http.StatusConflict, ErrCodeSlugTaken,
-			"Slug already taken", err.Error(),
-			"Use a different title or slug")
+		Error(c, http.StatusConflict, ErrCodeSlugTaken, "Slug already taken")
 	case errors.Is(err, domain.ErrPostAlreadyPublished):
-		Error(c, http.StatusConflict, ErrCodePostAlreadyPublished,
-			"Post already published", err.Error(),
-			"Post is already published. Unpublish it first if you want to change its status")
+		Error(c, http.StatusConflict, ErrCodePostAlreadyPublished, "Post already published")
 	case errors.Is(err, domain.ErrInvalidStatusChange):
-		Error(c, http.StatusBadRequest, ErrCodeInvalidStatusChange,
-			"Invalid status change", err.Error(),
-			"Check the current post status and allowed transitions")
+		Error(c, http.StatusBadRequest, ErrCodeInvalidStatusChange, "Invalid status change")
 	case errors.Is(err, domain.ErrForbidden):
-		Error(c, http.StatusForbidden, ErrCodeForbidden,
-			"Forbidden", err.Error(),
-			"You don't have permission to perform this action")
+		Error(c, http.StatusForbidden, ErrCodeForbidden, "Forbidden")
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrTokenExpired), errors.Is(err, domain.ErrInvalidToken):
-		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized,
-			"Unauthorized", err.Error(),
-			"Please login again")
+		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized, "Unauthorized")
 	case errors.Is(err, domain.ErrConflict):
-		Error(c, http.StatusConflict, ErrCodeConflict,
-			"Conflict", err.Error(),
-			"Resolve the conflict and try again")
+		Error(c, http.StatusConflict, ErrCodeConflict, "Conflict")
 	default:
-		Error(c, http.StatusInternalServerError, ErrCodeInternalServer,
-			"Internal server error", "An unexpected error occurred",
-			"Please try again later or contact support")
+		Error(c, http.StatusInternalServerError, ErrCodeInternalServer, "Internal server error")
 	}
 }
 
-func ValidationError(c *gin.Context, err error) {
-	trackingID := getTrackingID(c)
-
-	response := domain.APIResponse{
-		Status:           "error",
-		StatusCode:       http.StatusBadRequest,
-		TrackingID:       trackingID,
-		DocumentationURL: docsURL,
-		Error: &domain.APIError{
-			Code:       ErrCodeValidationFailed,
-			Message:    "Validation failed",
-			Details:    fmt.Sprintf("%v", err),
-			Timestamp:  time.Now().Format(time.RFC3339),
-			Path:       c.Request.URL.Path,
-			Suggestion: "Check the request payload",
-		},
-	}
-
-	c.JSON(http.StatusBadRequest, response)
+// ValidationError sends a validation error response
+func ValidationError(c *gin.Context, message string) {
+	Error(c, http.StatusBadRequest, ErrCodeValidationFailed, message)
 }

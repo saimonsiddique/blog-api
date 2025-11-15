@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/saimonsiddique/blog-api/internal/domain"
+	"github.com/saimonsiddique/blog-api/internal/pkg/logger"
 	"github.com/saimonsiddique/blog-api/internal/service"
 )
 
@@ -24,9 +26,7 @@ func NewUserHandler(userService *service.UserService) *UserHandler {
 func (h *UserHandler) GetProfile(c *gin.Context) {
 	userUUID, exists := GetUserUUID(c)
 	if !exists {
-		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized,
-			"Unauthorized", "User not authenticated",
-			"Please login to access this resource")
+		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized, "Unauthorized")
 		return
 	}
 
@@ -36,26 +36,24 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		return
 	}
 
-	Success(c, http.StatusOK, resp)
+	Success(c, resp)
 }
 
 func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	userUUID, exists := GetUserUUID(c)
 	if !exists {
-		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized,
-			"Unauthorized", "User not authenticated",
-			"Please login to access this resource")
+		Error(c, http.StatusUnauthorized, ErrCodeUnauthorized, "Unauthorized")
 		return
 	}
 
 	var req domain.UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		ValidationError(c, err)
+		ValidationError(c, "Invalid request payload")
 		return
 	}
 
 	if err := h.validate.Struct(req); err != nil {
-		ValidationError(c, err)
+		ValidationError(c, fmt.Sprintf("Validation failed: %v", err))
 		return
 	}
 
@@ -65,5 +63,6 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	Success(c, http.StatusOK, resp)
+	logger.WithField("user_id", userUUID).Info("User profile updated")
+	Success(c, resp)
 }

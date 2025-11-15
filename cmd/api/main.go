@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,13 +11,14 @@ import (
 
 	"github.com/saimonsiddique/blog-api/internal/app"
 	"github.com/saimonsiddique/blog-api/internal/config"
+	"github.com/saimonsiddique/blog-api/internal/pkg/logger"
 )
 
 const shutdownTimeout = 30 * time.Second
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("Application failed: %v", err)
+		logger.Fatalf("Application failed: %v", err)
 	}
 }
 
@@ -29,7 +29,7 @@ func run() error {
 		return err
 	}
 
-	// Initialize application
+	// Initialize application (logger is initialized inside app.New)
 	application, err := app.New(cfg)
 	if err != nil {
 		return err
@@ -43,7 +43,6 @@ func run() error {
 	// Start server in goroutine
 	serverErrors := make(chan error, 1)
 	go func() {
-		log.Printf("Server starting on %s:%s", cfg.Server.Host, cfg.Server.Port)
 		if err := application.Run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErrors <- err
 		}
@@ -54,18 +53,18 @@ func run() error {
 	case err := <-serverErrors:
 		return err
 	case <-ctx.Done():
-		log.Println("Shutdown signal received")
+		logger.Info("Shutdown signal received")
 	}
 
 	// Graceful shutdown
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	log.Println("Shutting down gracefully...")
+	logger.Info("Shutting down gracefully...")
 	if err := application.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
 
-	log.Println("Shutdown completed")
+	logger.Info("Shutdown completed")
 	return nil
 }
